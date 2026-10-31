@@ -61,5 +61,5 @@ func oneShot(cfg *config.Config, prompt string) error {
 	client := llm.New(prov.BaseURL, prov.APIKey, prov.Model)
 	return client.ChatStream(context.Background(), []llm.Message{
 		{Role: "user", Content: prompt},
-	}, func(d string) { fmt.Print(d) })
+	}, func(d string) { fmt.Print(d) }, nil)
 }

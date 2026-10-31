@@ -47,16 +47,23 @@ type chatChunk struct {
 	Choices []struct {
 		Delta struct {
 			Content string `json:"content"`
+			// Reasoning traces from thinking models. Server field names
+			// vary: reasoning_content (OpenAI/DeepSeek style) vs
+			// reasoning (Ollama).
+			ReasoningContent string `json:"reasoning_content"`
+			Reasoning        string `json:"reasoning"`
 		} `json:"delta"`
 	} `json:"choices"`
 }
 
 // ChatStream streams a completion, invoking onDelta for each content
-// delta. It returns after the stream completes or ctx is canceled.
+// delta and onThinking for each reasoning delta (either may be nil).
+// It returns after the stream completes or ctx is canceled.
 func (c *Client) ChatStream(
 	ctx context.Context,
 	msgs []Message,
 	onDelta func(string),
+	onThinking func(string),
 ) error {
 	body, err := json.Marshal(chatRequest{
 		Model:    c.Model,
@@ -110,8 +117,17 @@ func (c *Client) ChatStream(
 			continue
 		}
 		for _, ch := range chunk.Choices {
-			if ch.Delta.Content != "" {
+			if ch.Delta.Content != "" && onDelta != nil {
 				onDelta(ch.Delta.Content)
+			}
+			if onThinking != nil {
+				think := ch.Delta.ReasoningContent
+				if think == "" {
+					think = ch.Delta.Reasoning
+				}
+				if think != "" {
+					onThinking(think)
+				}
 			}
 		}
 	}

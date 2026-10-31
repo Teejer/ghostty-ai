@@ -398,6 +398,14 @@ func (s *server) runTurn(sess *session, t *turnGen, msgs []llm.Message) {
 		}
 		full = append(full, delta...)
 		sess.write(outbound{Type: "delta", Text: delta})
+	}, func(think string) {
+		sess.mu.Lock()
+		live := sess.turn == t
+		sess.mu.Unlock()
+		if !live {
+			return
+		}
+		sess.write(outbound{Type: "thinking", Text: think})
 	})
 
 	sess.mu.Lock()
