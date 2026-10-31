@@ -44,6 +44,21 @@ type Config struct {
 	// MaxScreenBytes caps how much terminal screen context is sent
 	// to the model per message. The tail is kept.
 	MaxScreenBytes int `json:"max_screen_bytes"`
+
+	// Policy for AI-proposed commands: "ask" (default, always confirm
+	// in the terminal), "auto_except_dangerous", "auto_all", or
+	// "read_only" (never propose).
+	Policy string `json:"policy"`
+}
+
+// ExecPolicy returns the normalized command policy.
+func (c *Config) ExecPolicy() string {
+	switch c.Policy {
+	case "auto_except_dangerous", "auto_all", "read_only":
+		return c.Policy
+	default:
+		return "ask"
+	}
 }
 
 // Path returns the default config file path.
