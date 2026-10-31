@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -168,6 +169,8 @@ func (s *server) getSession(tabID string) *session {
 
 const systemPrompt = `You are the AI panel embedded in the Ghostty terminal, attached to exactly one terminal tab. ` +
 	`The user's messages include the current visible screen of that tab as context. ` +
+	`If the screen section is empty or shows only a shell prompt, say plainly that you can only see an empty screen; never pretend to know more. ` +
+	`You can read the screen but cannot type into the terminal. ` +
 	`Be concise and practical. Prefer terminal-friendly formatting. When you suggest a command, put it in a fenced code block; never assume it has been run.`
 
 func (s *server) handleConn(conn net.Conn) {
@@ -213,7 +216,10 @@ func (s *server) handleConn(conn net.Conn) {
 				writeOne(conn, outbound{Type: "error", Message: "send hello first"})
 				continue
 			}
-			slog.Info("chat", "tab", sess.tabID, "prompt_bytes", len(in.Text), "screen_bytes", len(in.Screen))
+			slog.Info("chat", "tab", sess.tabID,
+				"prompt_bytes", len(in.Text),
+				"screen_bytes", len(in.Screen),
+				"screen_tail", quoteTail(in.Screen, 80))
 			s.startTurn(sess, in.Text, in.Screen)
 		case "set_provider":
 			if sess == nil {
@@ -422,4 +428,12 @@ func tail(s string, n int) string {
 		return s
 	}
 	return "…(older screen content truncated)…\n" + s[len(s)-n:]
+}
+
+// quoteTail renders the last n bytes of s as a quoted log line.
+func quoteTail(s string, n int) string {
+	if len(s) > n {
+		s = "…" + s[len(s)-n:]
+	}
+	return strconv.Quote(s)
 }
