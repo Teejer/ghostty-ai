@@ -61,7 +61,12 @@ func Serve(ctx context.Context, path string, cfg *config.Config) error {
 		os.Remove(path)
 	}()
 
-	s := &server{cfg: cfg, sessions: map[string]*session{}}
+	s := &server{
+		cfg:      cfg,
+		sessions: map[string]*session{},
+		health:   map[string]bool{},
+	}
+	go s.healthLoop(ctx)
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -104,6 +109,7 @@ type outbound struct {
 	Model     string                `json:"model,omitempty"`
 	Providers []config.ProviderInfo `json:"providers,omitempty"`
 	Default   string                `json:"default,omitempty"`
+	OK        bool                  `json:"ok,omitempty"`
 	ID        string                `json:"id,omitempty"`
 	Command   string                `json:"command,omitempty"`
 	Auto      bool                  `json:"auto,omitempty"`
@@ -116,6 +122,10 @@ type server struct {
 
 	mu       sync.Mutex
 	sessions map[string]*session
+
+	// health caches provider reachability (guarded by mu), refreshed
+	// by healthLoop in health.go.
+	health map[string]bool
 }
 
 // session is the AI state for one terminal tab. It outlives its socket
@@ -214,7 +224,7 @@ func (s *server) handleConn(conn net.Conn) {
 			sess = s.getSession(in.TabID)
 			sess.attach(conn)
 			slog.Info("hello", "tab", in.TabID, "title", in.Title)
-			msg := outbound{Type: "ready", Providers: s.cfg.ProviderInfos()}
+			msg := outbound{Type: "ready", Providers: s.infos()}
 			defName, defProv, ok := s.cfg.Default()
 			if ok {
 				msg.Default = defName
@@ -255,7 +265,7 @@ func (s *server) handleConn(conn net.Conn) {
 				Provider:  info.Name,
 				Label:     info.DisplayName(),
 				Model:     info.Model,
-				Providers: s.cfg.ProviderInfos(),
+				Providers: s.infos(),
 			})
 		case "exec_reply":
 			if sess == nil {

@@ -26,6 +26,10 @@ type ProviderInfo struct {
 	Name  string `json:"name"`
 	Label string `json:"label"`
 	Model string `json:"model"`
+
+	// OK is the daemon's live reachability verdict, stamped on ready
+	// messages; omitted (false) until the first probe completes.
+	OK bool `json:"ok,omitempty"`
 }
 
 // DisplayName is the short name to show a human.
