@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/Teejer/ghostty-ai/internal/config"
 	"github.com/Teejer/ghostty-ai/internal/llm"
@@ -112,6 +113,7 @@ type server struct {
 type session struct {
 	tabID   string
 	history []llm.Message
+	owner   *server
 
 	mu         sync.Mutex // guards conn, generating, cancel
 	conn       net.Conn
@@ -141,7 +143,7 @@ func (s *server) getSession(tabID string) *session {
 	defer s.mu.Unlock()
 	sess, ok := s.sessions[tabID]
 	if !ok {
-		sess = &session{tabID: tabID, history: []llm.Message{
+		sess = &session{tabID: tabID, owner: s, history: []llm.Message{
 			{Role: "system", Content: systemPrompt},
 		}}
 		s.sessions[tabID] = sess
@@ -226,6 +228,26 @@ func (s *session) detach(conn net.Conn) {
 	defer s.mu.Unlock()
 	if s.conn == conn {
 		s.conn = nil
+		// If the panel went away without a bye (crash, kill), reap the
+		// session after a grace period so reconnects still work but
+		// abandoned sessions do not leak.
+		time.AfterFunc(10*time.Minute, s.gc)
+	}
+}
+
+// gc drops the session from the server unless a panel reattached or a
+// turn is still running.
+func (s *session) gc() {
+	s.owner.mu.Lock()
+	defer s.owner.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.conn != nil || s.generating {
+		return
+	}
+	if s.owner.sessions[s.tabID] == s {
+		delete(s.owner.sessions, s.tabID)
+		slog.Info("reaped abandoned session", "tab", s.tabID)
 	}
 }
 
