@@ -26,6 +26,10 @@ type Client struct {
 	APIKey  string
 	Model   string
 	HTTP    *http.Client
+
+	// Extra fields merged into the request body (server-specific
+	// flags such as enable_thinking).
+	Extra map[string]any
 }
 
 func New(baseURL, apiKey, model string) *Client {
@@ -65,11 +69,24 @@ func (c *Client) ChatStream(
 	onDelta func(string),
 	onThinking func(string),
 ) error {
-	body, err := json.Marshal(chatRequest{
+	raw, err := json.Marshal(chatRequest{
 		Model:    c.Model,
 		Messages: msgs,
 		Stream:   true,
 	})
+	if err != nil {
+		return err
+	}
+
+	// Merge provider-specific flags on top of the standard body.
+	var bodyMap map[string]any
+	if err := json.Unmarshal(raw, &bodyMap); err != nil {
+		return err
+	}
+	for k, v := range c.Extra {
+		bodyMap[k] = v
+	}
+	body, err := json.Marshal(bodyMap)
 	if err != nil {
 		return err
 	}

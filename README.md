@@ -28,7 +28,8 @@ go build -o bin/ghostty-ai ./cmd/ghostty-ai
   "providers": {
     "mlx": {
       "base_url": "http://192.168.8.70:11234/v1",
-      "model": "ddalcu/Qwen3.8-Flash-Next-MLX-Serve-mixed-4-8bit"
+      "model": "ddalcu/Qwen3.8-Flash-Next-MLX-Serve-mixed-4-8bit",
+      "options": { "enable_thinking": true }
     },
     "ollama": {
       "base_url": "http://192.168.8.50:11434/v1",
@@ -41,6 +42,20 @@ go build -o bin/ghostty-ai ./cmd/ghostty-ai
 Any OpenAI-compatible `chat/completions` endpoint works (Ollama, MLX
 servers, llama.cpp, vLLM, OpenRouter, OpenAI, ...). Anthropic-native
 endpoints are planned (`"anthropic": true`).
+
+`options` is an object whose entries are merged verbatim into every
+chat request body — the way to reach server-specific flags, since the
+names are not standardized:
+
+| server | thinking / effort keys |
+| --- | --- |
+| mlx-serve | `enable_thinking` (bool; without it no reasoning deltas are emitted). `reasoning_effort` is accepted but observed to have no effect |
+| OpenAI & many clouds | `reasoning_effort`: `"low"` / `"medium"` / `"high"` (omit for none) |
+| Ollama | `think`: `true` / `"low"` / `"high"` |
+
+Reasoning deltas (`reasoning_content` or `reasoning` in the stream)
+render as collapsible thinking blocks in the panel automatically;
+there is nothing extra to enable on the panel side.
 
 ## Socket protocol (v0, line-delimited JSON)
 

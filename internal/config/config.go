@@ -12,7 +12,12 @@ import (
 type Provider struct {
 	BaseURL string `json:"base_url"` // e.g. http://host:1234/v1
 	APIKey  string `json:"api_key"`  // optional
-	Model   string `json:"model"`
+
+	// Options are extra fields merged verbatim into every chat
+	// request body, e.g. {"enable_thinking": true} which mlx-serve
+	// needs before it emits reasoning_content deltas.
+	Options map[string]any `json:"options"`
+	Model   string         `json:"model"`
 	// Label is an optional short display name for panels; the model
 	// ID is what the API actually receives.
 	Label string `json:"label"`

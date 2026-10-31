@@ -150,6 +150,11 @@ type session struct {
 	// or the panel goes away).
 	pendingExec map[string]chan execResult
 	pendingID   string
+
+	// lastExecID is the most recent approved-and-run exec id; the
+	// panel may still be watching that command and push a late
+	// exec_output for it.
+	lastExecID string
 }
 
 // turnGen is one in-flight model turn. Sending a new message while a
@@ -267,6 +272,42 @@ func (s *server) handleConn(conn net.Conn) {
 				Model:     info.Model,
 				Providers: s.infos(),
 			})
+		case "exec_output":
+			// The panel's follow-up watch: the screen changed after
+			// we already answered for this exec. Feed it in as a
+			// late update; start a turn only when the tab is idle.
+			if sess == nil {
+				continue
+			}
+			out := in.Output
+			if len(out) > 16*1024 {
+				out = "…(output truncated)…\n" + out[len(out)-16*1024:]
+			}
+			sess.mu.Lock()
+			if in.ID != sess.lastExecID {
+				sess.mu.Unlock()
+				continue // stale or unknown exec; nothing to update
+			}
+			note := fmt.Sprintf(
+				"Update: the terminal changed after your last look at this command (it may have finished). Current screen:\n```\n%s\n```",
+				out)
+			sess.history = append(sess.history,
+				llm.Message{Role: "user", Content: note})
+			var t2 *turnGen
+			var msgs []llm.Message
+			if sess.turn == nil {
+				t2 = &turnGen{}
+				t2.ctx, t2.cancel = context.WithCancel(context.Background())
+				sess.turn = t2
+				msgs = append([]llm.Message(nil), sess.history...)
+			}
+			sess.mu.Unlock()
+			slog.Info("exec output update", "tab", sess.tabID,
+				"id", in.ID, "output_bytes", len(in.Output),
+				"turn_started", t2 != nil)
+			if t2 != nil {
+				go s.runTurn(sess, t2, msgs, 0)
+			}
 		case "exec_reply":
 			if sess == nil {
 				writeOne(conn, outbound{Type: "error", Message: "send hello first"})
@@ -451,6 +492,7 @@ func (s *server) runTurn(sess *session, t *turnGen, msgs []llm.Message, depth in
 
 	sess.write(outbound{Type: "status", State: "thinking"})
 	client := llm.New(prov.BaseURL, prov.APIKey, prov.Model)
+	client.Extra = prov.Options
 
 	var full []byte
 	filter := newFenceFilter(func(text string) {
@@ -605,6 +647,7 @@ func (s *server) runExec(sess *session, t *turnGen, cmd string, depth int) {
 		"I ran the command as approved. Status: %s.\nTerminal output:\n```\n%s\n```",
 		res.Status, out)
 	sess.history = append(sess.history, llm.Message{Role: "user", Content: note})
+	sess.lastExecID = id
 	msgs := append([]llm.Message(nil), sess.history...)
 	t2 := &turnGen{}
 	t2.ctx, t2.cancel = context.WithCancel(context.Background())
