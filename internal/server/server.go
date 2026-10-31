@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -646,6 +647,16 @@ func (s *server) runExec(sess *session, t *turnGen, cmd string, depth int) {
 	note := fmt.Sprintf(
 		"I ran the command as approved. Status: %s.\nTerminal output:\n```\n%s\n```",
 		res.Status, out)
+	if res.Status == "timeout" {
+		note += "\nThe command may still be running; the panel will " +
+			"send another message when its output settles. Do not say " +
+			"you cannot see the output and do not ask the user to " +
+			"rerun it; briefly interpret what is shown or say you are " +
+			"waiting for the rest."
+	} else if strings.HasPrefix(res.Status, "exit ") {
+		note += "\nThe shell reported this exit code when the command " +
+			"finished."
+	}
 	sess.history = append(sess.history, llm.Message{Role: "user", Content: note})
 	sess.lastExecID = id
 	msgs := append([]llm.Message(nil), sess.history...)
