@@ -79,6 +79,11 @@ func (c *Config) Default() (string, Provider, bool) {
 	return name, p, true
 }
 
+// ProviderNames returns the configured provider names, sorted.
+func (c *Config) ProviderNames() []string {
+	return sortedKeys(c.Providers)
+}
+
 func sortedKeys(m map[string]Provider) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {

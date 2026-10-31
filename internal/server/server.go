@@ -80,21 +80,24 @@ func Serve(ctx context.Context, path string, cfg *config.Config) error {
 
 // inbound messages
 type inbound struct {
-	Type   string `json:"type"` // hello | chat | cancel | bye
-	TabID  string `json:"tab_id"`
-	Title  string `json:"title"`
-	Text   string `json:"text"`
-	Screen string `json:"screen"`
+	Type     string `json:"type"` // hello | chat | cancel | set_provider | bye
+	TabID    string `json:"tab_id"`
+	Title    string `json:"title"`
+	Text     string `json:"text"`
+	Screen   string `json:"screen"`
+	Provider string `json:"provider"`
 }
 
 // outbound messages (one struct, sparse fields)
 type outbound struct {
-	Type     string `json:"type"` // ready | status | delta | done | error
-	State    string `json:"state,omitempty"`
-	Text     string `json:"text,omitempty"`
-	Message  string `json:"message,omitempty"`
-	Provider string `json:"provider,omitempty"`
-	Model    string `json:"model,omitempty"`
+	Type      string   `json:"type"` // ready | status | delta | done | error
+	State     string   `json:"state,omitempty"`
+	Text      string   `json:"text,omitempty"`
+	Message   string   `json:"message,omitempty"`
+	Provider  string   `json:"provider,omitempty"`
+	Model     string   `json:"model,omitempty"`
+	Providers []string `json:"providers,omitempty"`
+	Default   string   `json:"default,omitempty"`
 }
 
 // ----------------------------------------------------------------------
@@ -114,6 +117,9 @@ type session struct {
 	tabID   string
 	history []llm.Message
 	owner   *server
+
+	// Provider chosen for this tab; empty means the config default.
+	provider string
 
 	mu         sync.Mutex // guards conn, generating, cancel
 	conn       net.Conn
@@ -178,19 +184,44 @@ func (s *server) handleConn(conn net.Conn) {
 			}
 			sess = s.getSession(in.TabID)
 			sess.attach(conn)
-			msg := outbound{Type: "ready"}
-			if name, p, ok := s.cfg.Default(); ok {
-				msg.Provider, msg.Model = name, p.Model
+			slog.Info("hello", "tab", in.TabID, "title", in.Title)
+			msg := outbound{Type: "ready", Providers: s.cfg.ProviderNames()}
+			defName, defProv, ok := s.cfg.Default()
+			if ok {
+				msg.Default = defName
 			} else {
 				msg.Message = "no providers configured in " + config.Path()
 			}
+			name, prov, _ := s.resolveProvider(sess.getProvider())
+			if name == "" {
+				name, prov = defName, defProv
+			}
+			msg.Provider, msg.Model = name, prov.Model
 			writeOne(conn, msg)
 		case "chat":
 			if sess == nil {
 				writeOne(conn, outbound{Type: "error", Message: "send hello first"})
 				continue
 			}
+			slog.Info("chat", "tab", sess.tabID, "prompt_bytes", len(in.Text), "screen_bytes", len(in.Screen))
 			s.startTurn(sess, in.Text, in.Screen)
+		case "set_provider":
+			if sess == nil {
+				writeOne(conn, outbound{Type: "error", Message: "send hello first"})
+				continue
+			}
+			if _, ok := s.cfg.Providers[in.Provider]; !ok {
+				writeOne(conn, outbound{Type: "error",
+					Message: "unknown provider " + in.Provider})
+				continue
+			}
+			sess.setProvider(in.Provider)
+			slog.Info("set_provider", "tab", sess.tabID, "provider", in.Provider)
+			writeOne(conn, outbound{Type: "ready",
+				Provider:  in.Provider,
+				Model:     s.cfg.Providers[in.Provider].Model,
+				Providers: s.cfg.ProviderNames(),
+			})
 		case "cancel":
 			if sess != nil {
 				sess.cancelTurn()
@@ -215,6 +246,29 @@ func (s *server) handleConn(conn net.Conn) {
 func writeOne(w io.Writer, msg outbound) {
 	b, _ := json.Marshal(msg)
 	w.Write(append(b, '\n'))
+}
+
+func (s *session) getProvider() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.provider
+}
+
+func (s *session) setProvider(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.provider = name
+}
+
+// resolveProvider looks up a provider by name, falling back to the
+// config default when name is empty or unknown.
+func (s *server) resolveProvider(name string) (string, config.Provider, bool) {
+	if name != "" {
+		if p, ok := s.cfg.Providers[name]; ok {
+			return name, p, true
+		}
+	}
+	return s.cfg.Default()
 }
 
 func (s *session) attach(conn net.Conn) {
@@ -296,7 +350,7 @@ func (s *server) startTurn(sess *session, text, screen string) {
 			sess.mu.Unlock()
 		}()
 
-		_, prov, ok := s.cfg.Default()
+		provName, prov, ok := s.resolveProvider(sess.getProvider())
 		if !ok {
 			sess.write(outbound{Type: "error",
 				Message: "no providers configured in " + config.Path()})
@@ -323,6 +377,8 @@ func (s *server) startTurn(sess *session, text, screen string) {
 		sess.mu.Unlock()
 
 		if err != nil {
+			slog.Error("provider turn failed", "tab", sess.tabID,
+				"provider", provName, "err", err)
 			sess.write(outbound{Type: "error", Message: err.Error()})
 		}
 		sess.write(outbound{Type: "done"})
