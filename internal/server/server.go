@@ -269,6 +269,9 @@ func (s *server) handleConn(conn net.Conn) {
 				sess.pendingID = ""
 			}
 			sess.mu.Unlock()
+			slog.Info("exec reply", "tab", sess.tabID, "id", in.ID,
+				"decision", in.Decision, "status", in.Status,
+				"output_bytes", len(in.Output))
 			if ch != nil {
 				ch <- execResult{
 					Decision: in.Decision,
@@ -440,6 +443,9 @@ func (s *server) runTurn(sess *session, t *turnGen, msgs []llm.Message, depth in
 	client := llm.New(prov.BaseURL, prov.APIKey, prov.Model)
 
 	var full []byte
+	filter := newFenceFilter(func(text string) {
+		sess.write(outbound{Type: "delta", Text: text})
+	})
 	err := client.ChatStream(t.ctx, msgs, func(delta string) {
 		sess.mu.Lock()
 		live := sess.turn == t
@@ -452,7 +458,7 @@ func (s *server) runTurn(sess *session, t *turnGen, msgs []llm.Message, depth in
 			sess.write(outbound{Type: "status", State: "generating"})
 		}
 		full = append(full, delta...)
-		sess.write(outbound{Type: "delta", Text: delta})
+		filter.Feed(delta)
 	}, func(think string) {
 		sess.mu.Lock()
 		live := sess.turn == t
@@ -462,6 +468,16 @@ func (s *server) runTurn(sess *session, t *turnGen, msgs []llm.Message, depth in
 		}
 		sess.write(outbound{Type: "thinking", Text: think})
 	})
+
+	// Release anything the filter was holding (e.g. a probe line whose
+	// newline never arrived). Skip if we were preempted: the panel has
+	// already closed this block.
+	sess.mu.Lock()
+	stillLive := sess.turn == t
+	sess.mu.Unlock()
+	if stillLive {
+		filter.Flush()
+	}
 
 	sess.mu.Lock()
 	if len(full) > 0 {
@@ -536,6 +552,11 @@ func (s *server) runExec(sess *session, t *turnGen, cmd string, depth int) {
 	var res execResult
 	select {
 	case res = <-ch:
+	case <-time.After(5 * time.Minute):
+		// Nobody answered (panel hid the buttons, user walked away):
+		// withdraw the proposal and unblock the session.
+		sess.write(outbound{Type: "exec_cancel", ID: id})
+		res = execResult{Decision: "deny", Status: "no-decision"}
 	case <-t.ctx.Done():
 		sess.mu.Lock()
 		delete(sess.pendingExec, id)
@@ -555,8 +576,12 @@ func (s *server) runExec(sess *session, t *turnGen, cmd string, depth int) {
 		return // preempted while the user was deciding
 	}
 	if res.Decision != "approve" {
-		sess.history = append(sess.history, llm.Message{Role: "user",
-			Content: "The user denied running that command. Do not run it; you may discuss an alternative in chat."})
+		note := "The user denied running that command. Do not run it; you may discuss an alternative in chat."
+		if res.Status == "no-decision" {
+			note = "The command proposal expired without a decision. Do not run it."
+		}
+		sess.history = append(sess.history,
+			llm.Message{Role: "user", Content: note})
 		sess.mu.Unlock()
 		s.clearTurn(sess, t)
 		return // the denial is already visible in the panel

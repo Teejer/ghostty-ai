@@ -1,6 +1,9 @@
 package server
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestExtractCommands(t *testing.T) {
 	in := "I will run it now.\n" +
@@ -46,5 +49,48 @@ func TestIsDangerous(t *testing.T) {
 		if isDangerous(c) {
 			t.Errorf("should be safe: %q", c)
 		}
+	}
+}
+
+func TestFenceFilter(t *testing.T) {
+	var shown strings.Builder
+	f := newFenceFilter(func(s string) { shown.WriteString(s) })
+
+	chunks := []string{
+		"I will run it now.\n",
+		"```exe", "cute\n", // fence opener split mid-word
+		"echo secret\n", // block body: hidden
+		"```\n",
+		"and done.\n",
+	}
+	for _, c := range chunks {
+		f.Feed(c)
+	}
+	f.Flush()
+	want := "I will run it now.\nand done.\n"
+	if shown.String() != want {
+		t.Fatalf("shown=%q want=%q", shown.String(), want)
+	}
+
+	// Ordinary fences pass through untouched, including a stray
+	// backtick at line start and multi-byte runes split mid-rune.
+	shown.Reset()
+	f2 := newFenceFilter(func(s string) { shown.WriteString(s) })
+	f2.Feed("`x\n```bash\nls\n```\n")
+	f2.Feed("hél") // split rune
+	f2.Feed("lo\n")
+	f2.Flush()
+	want = "`x\n```bash\nls\n```\nhéllo\n"
+	if shown.String() != want {
+		t.Fatalf("shown=%q want=%q", shown.String(), want)
+	}
+
+	// A dangling probe at end of stream is released, not eaten.
+	shown.Reset()
+	f3 := newFenceFilter(func(s string) { shown.WriteString(s) })
+	f3.Feed("```run")
+	f3.Flush()
+	if shown.String() != "```run" {
+		t.Fatalf("shown=%q", shown.String())
 	}
 }
