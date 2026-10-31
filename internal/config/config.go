@@ -13,9 +13,27 @@ type Provider struct {
 	BaseURL string `json:"base_url"` // e.g. http://host:1234/v1
 	APIKey  string `json:"api_key"`  // optional
 	Model   string `json:"model"`
+	// Label is an optional short display name for panels; the model
+	// ID is what the API actually receives.
+	Label string `json:"label"`
 	// Anthropic marks the provider as using the Anthropic messages
 	// API instead of OpenAI-compatible chat completions.
 	Anthropic bool `json:"anthropic"`
+}
+
+// ProviderInfo is the panel-facing description of a provider.
+type ProviderInfo struct {
+	Name  string `json:"name"`
+	Label string `json:"label"`
+	Model string `json:"model"`
+}
+
+// DisplayName is the short name to show a human.
+func (p ProviderInfo) DisplayName() string {
+	if p.Label != "" {
+		return p.Label
+	}
+	return p.Name
 }
 
 // Config is the daemon configuration.
@@ -79,9 +97,25 @@ func (c *Config) Default() (string, Provider, bool) {
 	return name, p, true
 }
 
-// ProviderNames returns the configured provider names, sorted.
-func (c *Config) ProviderNames() []string {
-	return sortedKeys(c.Providers)
+// ProviderInfos returns the configured providers, sorted by name, for
+// panels to render.
+func (c *Config) ProviderInfos() []ProviderInfo {
+	names := sortedKeys(c.Providers)
+	infos := make([]ProviderInfo, 0, len(names))
+	for _, n := range names {
+		infos = append(infos, c.Info(n))
+	}
+	return infos
+}
+
+// Info describes one configured provider. An unknown name yields an
+// info carrying just the name so panels always have something to show.
+func (c *Config) Info(name string) ProviderInfo {
+	p, ok := c.Providers[name]
+	if !ok {
+		return ProviderInfo{Name: name, Label: name}
+	}
+	return ProviderInfo{Name: name, Label: p.Label, Model: p.Model}
 }
 
 func sortedKeys(m map[string]Provider) []string {

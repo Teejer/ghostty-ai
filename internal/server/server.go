@@ -90,14 +90,15 @@ type inbound struct {
 
 // outbound messages (one struct, sparse fields)
 type outbound struct {
-	Type      string   `json:"type"` // ready | status | delta | done | error
-	State     string   `json:"state,omitempty"`
-	Text      string   `json:"text,omitempty"`
-	Message   string   `json:"message,omitempty"`
-	Provider  string   `json:"provider,omitempty"`
-	Model     string   `json:"model,omitempty"`
-	Providers []string `json:"providers,omitempty"`
-	Default   string   `json:"default,omitempty"`
+	Type      string                `json:"type"` // ready | status | delta | done | error
+	State     string                `json:"state,omitempty"`
+	Text      string                `json:"text,omitempty"`
+	Message   string                `json:"message,omitempty"`
+	Provider  string                `json:"provider,omitempty"`
+	Label     string                `json:"label,omitempty"`
+	Model     string                `json:"model,omitempty"`
+	Providers []config.ProviderInfo `json:"providers,omitempty"`
+	Default   string                `json:"default,omitempty"`
 }
 
 // ----------------------------------------------------------------------
@@ -121,11 +122,19 @@ type session struct {
 	// Provider chosen for this tab; empty means the config default.
 	provider string
 
-	mu         sync.Mutex // guards conn, generating, cancel
-	conn       net.Conn
-	sendMu     sync.Mutex // serializes writes to conn
-	generating bool
-	cancel     context.CancelFunc
+	mu     sync.Mutex // guards conn, provider, turn
+	conn   net.Conn
+	sendMu sync.Mutex // serializes writes to conn
+	turn   *turnGen
+}
+
+// turnGen is one in-flight model turn. Sending a new message while a
+// turn is running replaces it: the old turn's goroutine notices it is
+// no longer the session's current turn and goes quiet, which avoids
+// two generations ever fighting over the session's transcript.
+type turnGen struct {
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 // write sends one message to the attached panel, if any. A detached
@@ -185,7 +194,7 @@ func (s *server) handleConn(conn net.Conn) {
 			sess = s.getSession(in.TabID)
 			sess.attach(conn)
 			slog.Info("hello", "tab", in.TabID, "title", in.Title)
-			msg := outbound{Type: "ready", Providers: s.cfg.ProviderNames()}
+			msg := outbound{Type: "ready", Providers: s.cfg.ProviderInfos()}
 			defName, defProv, ok := s.cfg.Default()
 			if ok {
 				msg.Default = defName
@@ -197,6 +206,7 @@ func (s *server) handleConn(conn net.Conn) {
 				name, prov = defName, defProv
 			}
 			msg.Provider, msg.Model = name, prov.Model
+			msg.Label = s.cfg.Info(name).DisplayName()
 			writeOne(conn, msg)
 		case "chat":
 			if sess == nil {
@@ -217,10 +227,12 @@ func (s *server) handleConn(conn net.Conn) {
 			}
 			sess.setProvider(in.Provider)
 			slog.Info("set_provider", "tab", sess.tabID, "provider", in.Provider)
+			info := s.cfg.Info(in.Provider)
 			writeOne(conn, outbound{Type: "ready",
-				Provider:  in.Provider,
-				Model:     s.cfg.Providers[in.Provider].Model,
-				Providers: s.cfg.ProviderNames(),
+				Provider:  info.Name,
+				Label:     info.DisplayName(),
+				Model:     info.Model,
+				Providers: s.cfg.ProviderInfos(),
 			})
 		case "cancel":
 			if sess != nil {
@@ -296,7 +308,7 @@ func (s *session) gc() {
 	defer s.owner.mu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.conn != nil || s.generating {
+	if s.conn != nil || s.turn != nil {
 		return
 	}
 	if s.owner.sessions[s.tabID] == s {
@@ -305,24 +317,21 @@ func (s *session) gc() {
 	}
 }
 
+// cancelTurn interrupts the running turn, if any. The turn's goroutine
+// still finishes (and reports "done") so the panel's transcript closes
+// cleanly.
 func (s *session) cancelTurn() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.cancel != nil {
-		s.cancel()
+	if s.turn != nil {
+		s.turn.cancel()
 	}
 }
 
 // startTurn runs one model turn in the background so the tab's AI
-// keeps working regardless of which tab is focused in the terminal.
+// keeps working regardless of which tab is focused in the terminal. A
+// new message preempts a still-running turn for the same tab.
 func (s *server) startTurn(sess *session, text, screen string) {
-	sess.mu.Lock()
-	if sess.generating {
-		sess.mu.Unlock()
-		sess.cancelTurn()
-	}
-	sess.mu.Unlock()
-
 	user := text
 	if screen != "" {
 		screen = tail(screen, s.cfg.MaxScreenBytes)
@@ -330,59 +339,81 @@ func (s *server) startTurn(sess *session, text, screen string) {
 	}
 
 	sess.mu.Lock()
-	if sess.generating {
-		// Previous turn still winding down; queue is out of scope for
-		// the MVP, reject politely.
-		sess.mu.Unlock()
-		sess.write(outbound{Type: "error", Message: "already generating; cancel first"})
-		return
+	preempted := sess.turn != nil
+	if preempted {
+		sess.turn.cancel()
 	}
+	t := &turnGen{}
+	t.ctx, t.cancel = context.WithCancel(context.Background())
+	sess.turn = t
 	sess.history = append(sess.history, llm.Message{Role: "user", Content: user})
 	msgs := append([]llm.Message(nil), sess.history...)
-	ctx, cancel := context.WithCancel(context.Background())
-	sess.generating, sess.cancel = true, cancel
 	sess.mu.Unlock()
 
-	go func() {
-		defer func() {
-			sess.mu.Lock()
-			sess.generating, sess.cancel = false, nil
-			sess.mu.Unlock()
-		}()
+	if preempted {
+		// Close the interrupted turn's block in the panel transcript.
+		sess.write(outbound{Type: "done"})
+	}
 
-		provName, prov, ok := s.resolveProvider(sess.getProvider())
-		if !ok {
-			sess.write(outbound{Type: "error",
-				Message: "no providers configured in " + config.Path()})
-			return
-		}
+	go s.runTurn(sess, t, msgs)
+}
 
-		sess.write(outbound{Type: "status", State: "thinking"})
-		client := llm.New(prov.BaseURL, prov.APIKey, prov.Model)
-
-		var full []byte
-		err := client.ChatStream(ctx, msgs, func(delta string) {
-			if len(full) == 0 {
-				sess.write(outbound{Type: "status", State: "generating"})
-			}
-			full = append(full, delta...)
-			sess.write(outbound{Type: "delta", Text: delta})
-		})
-
+// runTurn streams one generation for turn t. Events are only forwarded
+// while t is still the session's current turn; once preempted, the
+// goroutine keeps the partial text in history and exits quietly.
+func (s *server) runTurn(sess *session, t *turnGen, msgs []llm.Message) {
+	provName, prov, ok := s.resolveProvider(sess.getProvider())
+	if !ok {
+		sess.write(outbound{Type: "error",
+			Message: "no providers configured in " + config.Path()})
 		sess.mu.Lock()
-		if len(full) > 0 {
-			sess.history = append(sess.history,
-				llm.Message{Role: "assistant", Content: string(full)})
+		if sess.turn == t {
+			sess.turn = nil
 		}
 		sess.mu.Unlock()
-
-		if err != nil {
-			slog.Error("provider turn failed", "tab", sess.tabID,
-				"provider", provName, "err", err)
-			sess.write(outbound{Type: "error", Message: err.Error()})
-		}
 		sess.write(outbound{Type: "done"})
-	}()
+		return
+	}
+
+	sess.write(outbound{Type: "status", State: "thinking"})
+	client := llm.New(prov.BaseURL, prov.APIKey, prov.Model)
+
+	var full []byte
+	err := client.ChatStream(t.ctx, msgs, func(delta string) {
+		sess.mu.Lock()
+		live := sess.turn == t
+		sess.mu.Unlock()
+		if !live {
+			t.cancel() // supersede our own HTTP stream
+			return
+		}
+		if len(full) == 0 {
+			sess.write(outbound{Type: "status", State: "generating"})
+		}
+		full = append(full, delta...)
+		sess.write(outbound{Type: "delta", Text: delta})
+	})
+
+	sess.mu.Lock()
+	if len(full) > 0 {
+		sess.history = append(sess.history,
+			llm.Message{Role: "assistant", Content: string(full)})
+	}
+	live := sess.turn == t
+	if live {
+		sess.turn = nil
+	}
+	sess.mu.Unlock()
+
+	if !live {
+		return // the preempting turn owns the transcript now
+	}
+	if err != nil {
+		slog.Error("provider turn failed", "tab", sess.tabID,
+			"provider", provName, "err", err)
+		sess.write(outbound{Type: "error", Message: err.Error()})
+	}
+	sess.write(outbound{Type: "done"})
 }
 
 // tail returns the last n bytes of s, aligned to a byte boundary.
