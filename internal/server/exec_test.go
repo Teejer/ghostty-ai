@@ -10,9 +10,11 @@ func TestExtractCommands(t *testing.T) {
 		"```execute\nls -la\n```\n" +
 		"and maybe:\n" +
 		"```run\necho hi\n```\n" +
+		"```execute\n\"df -h\"\n```\n" +
 		"```bash\nnot-a-proposal\n```\n"
 	got := extractCommands(in)
-	if len(got) != 2 || got[0] != "ls -la" || got[1] != "echo hi" {
+	if len(got) != 3 || got[0] != "ls -la" || got[1] != "echo hi" ||
+		got[2] != "df -h" {
 		t.Fatalf("got %#v", got)
 	}
 	if n := len(extractCommands("just prose, no blocks")); n != 0 {

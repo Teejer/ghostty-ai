@@ -27,6 +27,23 @@ const maxExecRounds = 5
 
 // extractCommands returns commands proposed in fenced blocks whose
 // info string is execute, run, or command.
+// stripQuotes removes one layer of matching enclosing double or single
+// quotes. Models sometimes emit fenced commands as JSON-style strings
+// ("df -h"), and bash reads the quoted form as one giant command name
+// that fails with "command not found" — the quotes are quoting
+// artifacts, not part of the command.
+func stripQuotes(cmd string) string {
+	for len(cmd) >= 2 {
+		f, l := cmd[0], cmd[len(cmd)-1]
+		if (f == '"' && l == '"') || (f == '\'' && l == '\'') {
+			cmd = strings.TrimSpace(cmd[1 : len(cmd)-1])
+			continue
+		}
+		break
+	}
+	return cmd
+}
+
 func extractCommands(text string) []string {
 	var cmds []string
 	var cur []string
@@ -45,7 +62,7 @@ func extractCommands(text string) []string {
 			continue
 		}
 		if strings.HasPrefix(trimmed, "```") {
-			cmd := strings.TrimSpace(strings.Join(cur, "\n"))
+			cmd := stripQuotes(strings.TrimSpace(strings.Join(cur, "\n")))
 			if cmd != "" {
 				cmds = append(cmds, cmd)
 			}
