@@ -112,6 +112,13 @@ var dangerousPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`\bkubectl\b.*\bdelete\b`),
 	regexp.MustCompile(`\bterraform\s+destroy\b`),
 	regexp.MustCompile(`\bdoas\b`),
+
+	// Last pass before calling the list done: in-place edits of
+	// system config, ssh-key persistence, and truncate as a
+	// delete-by-another-name.
+	regexp.MustCompile(`\bsed\s+-\w*i\w*\b.*[/~](etc|boot|usr)/`),
+	regexp.MustCompile(`\.ssh/authorized_keys`),
+	regexp.MustCompile(`\btruncate\b.*\s/(\w|root)`),
 }
 
 func isDangerous(cmd string) bool {
