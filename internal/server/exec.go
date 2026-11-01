@@ -92,6 +92,26 @@ var dangerousPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`\b(iptables|nft|ufw)\b`),
 	regexp.MustCompile(`:\(\)\s*\{.*\|.*&.*\}`),
 	regexp.MustCompile(`\bxargs\b.*\brm\b`),
+
+	// Added after real-world proposal review: commands a chat model
+	// will happily suggest because they "clean up".
+	regexp.MustCompile(`\bgit\s+clean\s+-\w*[fd]`),
+	regexp.MustCompile(`\bgit\s+(checkout|restore)\s+(-\w+\s+)*(--\s+)?\.(\s|$)`),
+	regexp.MustCompile(`\bgit\s+branch\s+-D\b`),
+	regexp.MustCompile(`\bch(m|o)wn\s+-\w*R\w*\b`),
+	regexp.MustCompile(`\bfind\b.*(-delete\b|-exec\s+rm\b)`),
+	regexp.MustCompile(`\bpacman\b.*\s-R\w*`),
+	regexp.MustCompile(`\b(dnf|yum|apt(-get)?|zypper|emerge)\b.*\b(erase|remove|--remove)\b`),
+	regexp.MustCompile(`\bcrontab\s+-r\b`),
+	regexp.MustCompile(`\bsystemctl\s+(mask|disable)\b`),
+	regexp.MustCompile(`\b(userdel|groupdel|usermod)\b`),
+	regexp.MustCompile(`>[[:space:]]*/(boot|usr|sys|proc)/|\btee\s+/(boot|usr|sys|proc)/`),
+	regexp.MustCompile(`\b(shred)\b`),
+	regexp.MustCompile(`\b(btrfs|zpool|zfs)\b.*\bdestroy\b`),
+	regexp.MustCompile(`\bdocker\b.*\bprune\b.*(--volumes|-a\b)`),
+	regexp.MustCompile(`\bkubectl\b.*\bdelete\b`),
+	regexp.MustCompile(`\bterraform\s+destroy\b`),
+	regexp.MustCompile(`\bdoas\b`),
 }
 
 func isDangerous(cmd string) bool {
