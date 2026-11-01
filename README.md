@@ -40,8 +40,21 @@ go build -o bin/ghostty-ai ./cmd/ghostty-ai
 ```
 
 Any OpenAI-compatible `chat/completions` endpoint works (Ollama, MLX
-servers, llama.cpp, vLLM, OpenRouter, OpenAI, ...). Anthropic-native
-endpoints are planned (`"anthropic": true`).
+servers, llama.cpp, vLLM, OpenRouter, OpenAI, ...). Anthropic's
+native Messages API is also supported:
+
+```json
+"claude": {
+  "protocol": "anthropic",
+  "base_url": "https://api.anthropic.com",
+  "api_key": "sk-ant-...",
+  "model": "claude-sonnet-4-5",
+  "options": { "max_tokens": 8192 }
+}
+```
+
+`max_tokens` defaults to 8192; native thinking blocks stream into
+the panel's collapsible thinking view automatically.
 
 `options` is an object whose entries are merged verbatim into every
 chat request body — the way to reach server-specific flags, since the

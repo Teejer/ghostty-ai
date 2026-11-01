@@ -10,6 +10,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -153,7 +154,7 @@ func newFenceFilter(emit func(string)) *fenceFilter {
 	return &fenceFilter{emit: emit, atEOL: true}
 }
 
-var fenceInfos = map[string]bool{"execute": true, "run": true, "command": true}
+var fenceInfos = map[string]bool{"execute": true, "run": true, "command": true, "scrollback": true}
 
 func isExecuteFenceLine(line string) bool {
 	return strings.HasPrefix(line, "```") &&
@@ -231,4 +232,35 @@ func newExecID() string {
 		return "exec-unknown"
 	}
 	return "exec-" + hex.EncodeToString(b[:])
+}
+
+// extractScrollback finds a ```scrollback fence containing a single
+// integer: the model's request for N lines of scrollback above the
+// visible screen. Only the first request counts.
+func extractScrollback(text string) (int, bool) {
+	var cur []string
+	inBlock := false
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !inBlock {
+			if strings.HasPrefix(trimmed, "```") {
+				info := strings.ToLower(strings.TrimSpace(
+					strings.TrimPrefix(trimmed, "```")))
+				if info == "scrollback" {
+					inBlock = true
+					cur = nil
+				}
+			}
+			continue
+		}
+		if strings.HasPrefix(trimmed, "```") {
+			body := strings.TrimSpace(strings.Join(cur, "\n"))
+			if n, err := strconv.Atoi(body); err == nil && n > 0 {
+				return n, true
+			}
+			return 0, false // block existed but was not a number
+		}
+		cur = append(cur, line)
+	}
+	return 0, false
 }

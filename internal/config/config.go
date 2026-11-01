@@ -11,7 +11,13 @@ import (
 // Provider is an OpenAI-compatible chat completions endpoint.
 type Provider struct {
 	BaseURL string `json:"base_url"` // e.g. http://host:1234/v1
-	APIKey  string `json:"api_key"`  // optional
+
+	// Protocol selects the wire format: "openai" (default, any
+	// OpenAI-compatible endpoint) or "anthropic" (native Messages
+	// API). For anthropic, base_url may be https://api.anthropic.com
+	// with or without the /v1 suffix.
+	Protocol string `json:"protocol"`
+	APIKey   string `json:"api_key"` // optional
 
 	// Options are extra fields merged verbatim into every chat
 	// request body, e.g. {"enable_thinking": true} which mlx-serve

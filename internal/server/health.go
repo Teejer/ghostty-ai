@@ -19,14 +19,32 @@ var healthClient = &http.Client{Timeout: 3 * time.Second}
 // A 401 still counts: the server is up, the key is just missing or
 // absent (many local servers need none). Only transport failures and
 // 5xx mean "not usable".
-func providerReachable(baseURL, apiKey string) bool {
-	req, err := http.NewRequest(http.MethodGet,
-		strings.TrimSuffix(baseURL, "/")+"/models", nil)
+func providerReachable(baseURL, apiKey, protocol string) bool {
+	var req *http.Request
+	var err error
+	if protocol == "anthropic" {
+		// No /models endpoint; an intentionally invalid tiny POST is
+		// fine: any HTTP answer (even 4xx) proves the endpoint lives.
+		url := strings.TrimSuffix(baseURL, "/")
+		url = strings.TrimSuffix(url, "/v1") + "/v1/messages"
+		req, err = http.NewRequest(http.MethodPost, url,
+			strings.NewReader("{}"))
+		if err == nil {
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("anthropic-version", "2023-06-01")
+			if apiKey != "" {
+				req.Header.Set("x-api-key", apiKey)
+			}
+		}
+	} else {
+		req, err = http.NewRequest(http.MethodGet,
+			strings.TrimSuffix(baseURL, "/")+"/models", nil)
+		if err == nil && apiKey != "" {
+			req.Header.Set("Authorization", "Bearer "+apiKey)
+		}
+	}
 	if err != nil {
 		return false
-	}
-	if apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 	resp, err := healthClient.Do(req)
 	if err != nil {
@@ -55,7 +73,7 @@ func (s *server) healthLoop(ctx context.Context) {
 func (s *server) checkHealth() {
 	var flips []outbound
 	for name, prov := range s.cfg.Providers {
-		ok := providerReachable(prov.BaseURL, prov.APIKey)
+		ok := providerReachable(prov.BaseURL, prov.APIKey, prov.Protocol)
 		s.mu.Lock()
 		prev, seen := s.health[name]
 		s.health[name] = ok

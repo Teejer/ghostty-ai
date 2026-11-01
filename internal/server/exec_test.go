@@ -127,3 +127,19 @@ func TestFenceFilter(t *testing.T) {
 		t.Fatalf("shown=%q", shown.String())
 	}
 }
+
+func TestExtractScrollback(t *testing.T) {
+	in := "Let me check.\n```scrollback\n200\n```\n"
+	if n, ok := extractScrollback(in); !ok || n != 200 {
+		t.Fatalf("got %d %v", n, ok)
+	}
+	if _, ok := extractScrollback("```execute\nls\n```"); ok {
+		t.Fatal("execute must not count as scrollback")
+	}
+	if _, ok := extractScrollback("```scrollback\nmany\n```"); ok {
+		t.Fatal("non-integer must not count")
+	}
+	if _, ok := extractScrollback("prose only"); ok {
+		t.Fatal("prose must not count")
+	}
+}
